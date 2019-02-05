@@ -321,6 +321,49 @@ class parameterized(object):
     def __call__(self, test_func):
         self.assert_not_in_testcase_subclass()
 
+        if detect_runner() == "pytest":
+            import pytest
+            argspec = inspect.getargspec(test_func)
+            args = argspec.args
+            if args and args[0] == "self":
+                args = args[1:]
+            input = self.get_input()
+            if not input:
+                if not self.skip_on_empty:
+                    raise ValueError(
+                        "Parameters iterable is empty (hint: use "
+                        "`parameterized([], skip_on_empty=True)` to skip "
+                        "this test when the input is empty)"
+                    )
+                return wraps(test_func)(lambda: skip_on_empty_helper())
+
+            # ohh goodness this is ugly... but at least it works \_/
+            def merge_arg_defaults(p):
+                diff = len(p.args) - len(args)
+                if diff == 0:
+                    res = p.args
+                else:
+                    vals = dict(zip(argspec.args[diff:], argspec.defaults[diff:]))
+                    vals.update(p.kwargs)
+                    res = tuple(p.args) + tuple(vals[x] for x in argspec.args[diff:])
+                if len(res) == 1:
+                    # It seems like py.test behaves badly when the argument
+                    # tuple has length 1, so if that's the case, unwrap that
+                    # here.
+                    return res[0]
+                return res
+
+            g = {
+                "__real_func": test_func,
+            }
+            passed_args = ",".join(args)
+            all_args = ",".join(argspec.args)
+            exec("""def wrapper_without_kwargs(%s): return __real_func(%s)""" %(all_args, all_args), g)
+            stuff = g["wrapper_without_kwargs"]
+            stuff.__name__ = test_func.__name__
+            p_args = [merge_arg_defaults(p) for p in input]
+            return pytest.mark.parametrize(passed_args, p_args)(stuff)
+
         @wraps(test_func)
         def wrapper(test_self=None):
             test_cls = test_self and type(test_self)
